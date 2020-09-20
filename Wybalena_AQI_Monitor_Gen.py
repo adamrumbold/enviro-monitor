@@ -38,8 +38,10 @@ try:
 except ImportError:
     from smbus import SMBus
 import logging
+from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import SYNCHRONOUS
 
-monitor_version = "5.24 - Gen"
+monitor_version = "5.25 - Gen"
 
 logging.basicConfig(
     format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
@@ -93,6 +95,10 @@ def retrieve_config():
     aio_household_prefix = parsed_config_parameters['aio_household_prefix']
     aio_location_prefix = parsed_config_parameters['aio_location_prefix']
     aio_package = parsed_config_parameters['aio_package']
+    enable_influxdata = parsed_config_parameters['enable_influxdata']
+    influx_token = parsed_config_parameters['influx_token']
+    influx_bucket = parsed_config_parameters['influx_bucket']
+    influx_org = parsed_config_parameters['influx_org']
     enable_send_data_to_homemanager = parsed_config_parameters['enable_send_data_to_homemanager']
     enable_receive_data_from_homemanager = parsed_config_parameters['enable_receive_data_from_homemanager']
     enable_indoor_outdoor_functionality = parsed_config_parameters['enable_indoor_outdoor_functionality']
@@ -143,7 +149,8 @@ def retrieve_config():
     time_zone = parsed_config_parameters['time_zone']
     custom_locations = parsed_config_parameters['custom_locations']
     return (temp_offset, altitude, enable_display, enable_adafruit_io, aio_user_name, aio_key, aio_feed_window,
-            aio_feed_sequence, aio_household_prefix, aio_location_prefix, aio_package, enable_send_data_to_homemanager,
+            aio_feed_sequence, aio_household_prefix, aio_location_prefix, aio_package, 
+            enable_influxdata, influx_token, influx_bucket, influx_org, enable_send_data_to_homemanager,
             enable_receive_data_from_homemanager, enable_indoor_outdoor_functionality,
             mqtt_broker_name, mqtt_username, mqtt_password, outdoor_source_type, outdoor_source_id, enable_luftdaten,
             enable_climate_and_gas_logging, enable_particle_sensor, enable_eco2_tvoc, gas_daily_r0_calibration_hour,
@@ -154,7 +161,7 @@ def retrieve_config():
 
 # Config Setup
 (temp_offset, altitude, enable_display, enable_adafruit_io, aio_user_name, aio_key, aio_feed_window, aio_feed_sequence,
-  aio_household_prefix, aio_location_prefix, aio_package, enable_send_data_to_homemanager,
+  aio_household_prefix, aio_location_prefix, aio_package, enable_influxdata, influx_token, influx_bucket, influx_org, enable_send_data_to_homemanager,
   enable_receive_data_from_homemanager, enable_indoor_outdoor_functionality, mqtt_broker_name,
   mqtt_username, mqtt_password, outdoor_source_type, outdoor_source_id, enable_luftdaten,
   enable_climate_and_gas_logging,  enable_particle_sensor, enable_eco2_tvoc, gas_daily_r0_calibration_hour,
@@ -569,6 +576,32 @@ def send_data_to_aio(feed_key, data):
             reason = 'Response Error: ' + str(response.status_code)
             print('aio ', reason)
     return not resp_error
+
+def send_data_to_influx(mqtt_values):
+    client = InfluxDBClient(url="https://eu-central-1-1.aws.cloud2.influxdata.com", token=influx_token)
+    write_api = client.write_api(write_options=SYNCHRONOUS)
+
+    _point1 = Point("enviroplus").tag("location", "Wybalena").field("temperature", mqtt_values["Temp"])
+    _point2 = Point("enviroplus").tag("location", "Wybalena").field("humidity", mqtt_values["Hum"][0])
+    _point3 = Point("enviroplus").tag("location", "Wybalena").field("barometer", mqtt_values["Bar"][0])
+    _point4 = Point("enviroplus").tag("location", "Wybalena").field("Lux", mqtt_values["Lux"])
+
+    print('Sending to influx')
+
+    if mqtt_values["Gas Calibrated"]:
+        _point5 = Point("enviroplus").tag("location", "Wybalena").field("Red", mqtt_values["Red"])
+        _point6 = Point("enviroplus").tag("location", "Wybalena").field("Oxi", mqtt_values["Oxi"])
+        _point7 = Point("enviroplus").tag("location", "Wybalena").field("NH3", mqtt_values["NH3"])
+        resp = write_api.write(bucket=influx_bucket, org=influx_org, record=[_point1, _point2, _point3, _point4, _point5, _point6, _point7])
+
+    else:
+        resp = write_api.write(bucket=influx_bucket, org=influx_org, record=[_point1, _point2, _point3, _point4])
+
+    print ('Influx sent')
+    # with response:', str(resp.status_code))
+    return resp
+    
+       
 
 def send_to_luftdaten(luft_values, id, enable_particle_sensor):
     print("Sending Data to Luftdaten")
@@ -1880,6 +1913,8 @@ try:
                     print("Luftdaten update successful. Waiting for next capture cycle")
                 else:
                     print("Luftdaten update unsuccessful. Waiting for next capture cycle")
+            if enable_influxdata: #send to influxdb if enabled
+                influx_response = send_data_to_influx(mqtt_values)
             else:
                 print('Waiting for next capture cycle')
 
