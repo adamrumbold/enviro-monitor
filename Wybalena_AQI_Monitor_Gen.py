@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 #Wybalena Environment Monitor
 # Requires Home Manager >=8.54 with Enviro Monitor timeout
 
@@ -38,16 +38,40 @@ try:
 except ImportError:
     from smbus import SMBus
 import logging
+import logging.handlers as handlers
+import time
+
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 monitor_version = "5.25 - Gen"
 
-logging.basicConfig(
-    format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
-    level=logging.INFO,
-    datefmt='%Y-%m-%d %H:%M:%S')
-logging.info("""Wybalena_Environment_Monitor.py - Pimoroni Enviro+ (and optional SGP30) sensor capture and display,
+
+#setup logging information
+logger = logging.getLogger('enviro')
+logger.setLevel(logging.INFO)
+
+## Here we define our formatter
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+#create a INFO level log file that rotates daily and is kept for 1 week
+logHandler = handlers.TimedRotatingFileHandler('logs/enviro.log', when='D', interval=1, backupCount=7)
+logHandler.setLevel(logging.INFO)
+logHandler.setFormatter(formatter)
+
+#create an error logfile that rotates weekly and is kept for a year
+errorLogHandler = handlers.TimedRotatingFileHandler('logs/enviro_error.log', when='W6', interval=1, backupCount=52)
+errorLogHandler.setLevel(logging.ERROR)
+errorLogHandler.setFormatter(formatter)
+
+logger.addHandler(logHandler)
+logger.addHandler(errorLogHandler)
+
+
+
+
+
+logger.info("""Wybalena_Environment_Monitor.py - Pimoroni Enviro+ (and optional SGP30) sensor capture and display,
  plus external sensor capture and Luftdaten, mqtt and Adafruit IO Updates
 #Note: you'll need to register with Luftdaten at:
 #https://meine.luftdaten.info/ and enter your Raspberry Pi
@@ -56,7 +80,7 @@ logging.info("""Wybalena_Environment_Monitor.py - Pimoroni Enviro+ (and optional
 #Luftdaten map.
 
 #""")
-print(monitor_version)
+logger.info(monitor_version)
 
 bus = SMBus(1)
 
@@ -78,11 +102,11 @@ disp.begin()
 
 def retrieve_config():
     try:
-        with open('Config/config.json', 'r') as f:
+        with open('/home/pi/Pimoroni/enviroplus/enviro-monitor/Config/config.json', 'r') as f:
             parsed_config_parameters = json.loads(f.read())
-            print('Retrieved Config', parsed_config_parameters)
+            logger.info('Retrieved Config', parsed_config_parameters)
     except IOError:
-        print('Config Retrieval Failed')
+        logger.error('Config Retrieval Failed')
     temp_offset = parsed_config_parameters['temp_offset']
     altitude = parsed_config_parameters['altitude']
     enable_display = parsed_config_parameters['enable_display'] # Enables the display and flags that the
@@ -179,6 +203,7 @@ if enable_particle_sensor:
     time.sleep(1)
             
 def read_pm_values(luft_values, mqtt_values, own_data, own_disp_values):
+    #logger.info("reading PM values")
     if enable_particle_sensor:
         try:
             pm_values = pms5003.read()
@@ -195,7 +220,7 @@ def read_pm_values(luft_values, mqtt_values, own_data, own_disp_values):
             mqtt_values["P1"] = own_data["P1"][1]
             own_disp_values["P1"] = own_disp_values["P1"][1:] + [[own_data["P1"][1], 1]]
         except (ReadTimeoutError, ChecksumMismatchError):
-            logging.info("Failed to read PMS5003")
+            logging.error("Failed to read PMS5003")
             display_error('Particle Sensor Error')
             pms5003.reset()
             pm_values = pms5003.read()
@@ -226,6 +251,7 @@ def read_eco2_tvoc_values(mqtt_values, own_data, own_disp_values):
 # Read gas and climate values from Home Manager and /or BME280 
 def read_climate_gas_values(luft_values, mqtt_values, own_data, maxi_temp, mini_temp, own_disp_values, gas_sensors_warm,
                             gas_calib_temp, gas_calib_hum, gas_calib_bar, altitude, enable_eco2_tvoc):
+    logger.info("reading climate gas values")
     raw_temp, comp_temp = adjusted_temperature()
     raw_hum, comp_hum = adjusted_humidity()
     current_time = time.time()
@@ -234,13 +260,13 @@ def read_climate_gas_values(luft_values, mqtt_values, own_data, maxi_temp, mini_
     if enable_receive_data_from_homemanager:
         use_external_temp_hum, use_external_barometer = es.check_valid_readings(current_time)
     if use_external_temp_hum == False:
-        print("Internal Temp/Hum Sensor")
+        logger.info("Internal Temp/Hum Sensor")
         luft_values["temperature"] = "{:.2f}".format(comp_temp)
         own_data["Temp"][1] = round(comp_temp, 1)
         luft_values["humidity"] = "{:.2f}".format(comp_hum)
         own_data["Hum"][1] = round(comp_hum, 1)
     else: # Use external temp/hum sensor but still capture raw temp and raw hum for gas compensation and logging
-        print("External Temp/Hum Sensor")
+        logger.info("External Temp/Hum Sensor")
         luft_values["temperature"] = es.temperature
         own_data["Temp"][1] = float(luft_values["temperature"])
         luft_values["humidity"] = es.humidity
@@ -274,15 +300,15 @@ def read_climate_gas_values(luft_values, mqtt_values, own_data, maxi_temp, mini_
     mqtt_values["Max Temp"] = maxi_temp
     raw_barometer = bme280.get_pressure()
     if use_external_barometer == False:
-        print("Internal Barometer")
+        logger.info("Using internal Barometer")
         own_data["Bar"][1] = round(raw_barometer * barometer_altitude_comp_factor(altitude, own_data["Temp"][1]), 1)
         own_disp_values["Bar"] = own_disp_values["Bar"][1:] + [[own_data["Bar"][1], 1]]
         mqtt_values["Bar"][0] = own_data["Bar"][1]
         luft_values["pressure"] = "{:.2f}".format(raw_barometer * 100) # Send raw air pressure to Lufdaten,
         # since it does its own altitude air pressure compensation
-        print("Raw Bar:", round(raw_barometer, 1), "Comp Bar:", own_data["Bar"][1])
+        logger.info("Raw Barometer: %s Comp Bar: %s", round(raw_barometer, 1), own_data["Bar"][1])
     else:
-        print("External Barometer")
+        logger.info("Using external Barometer")
         own_data["Bar"][1] = round(float(es.barometer), 1)
         own_disp_values["Bar"] = own_disp_values["Bar"][1:] + [[own_data["Bar"][1], 1]]
         mqtt_values["Bar"][0] = own_data["Bar"][1]
@@ -290,7 +316,7 @@ def read_climate_gas_values(luft_values, mqtt_values, own_data, maxi_temp, mini_
         # compensation
         luft_values["pressure"] = "{:.2f}".format(float(es.barometer) / barometer_altitude_comp_factor (
             altitude, own_data["Temp"][1]) * 100)
-        print("Luft Bar:", luft_values["pressure"], "Comp Bar:", own_data["Bar"][1])
+        logger.info("Luft Bar: %s Comp Bar: %s", luft_values["pressure"], own_data["Bar"][1])
     red_in_ppm, oxi_in_ppm, nh3_in_ppm, comp_red_rs, comp_oxi_rs, comp_nh3_rs, raw_red_rs, raw_oxi_rs, raw_nh3_rs =\
         read_gas_in_ppm(gas_calib_temp, gas_calib_hum, gas_calib_bar, raw_temp, raw_hum, raw_barometer, gas_sensors_warm)
     own_data["Red"][1] = round(red_in_ppm, 2)
@@ -332,14 +358,14 @@ def read_gas_in_ppm(gas_calib_temp, gas_calib_hum, gas_calib_bar, raw_temp, raw_
                                                                                              gas_calib_bar,
                                                                                              raw_temp,
                                                                                              raw_hum, raw_barometer)
-        print("Reading Compensated Gas sensors after warmup completed")
+        logger.info("Reading Compensated Gas sensors after warmup completed")
     else:
         raw_red_rs, raw_oxi_rs, raw_nh3_rs = read_raw_gas()
         comp_red_rs = raw_red_rs
         comp_oxi_rs = raw_oxi_rs
         comp_nh3_rs = raw_nh3_rs
-        print("Reading Raw Gas sensors before warmup completed")
-    print("Red Rs:", round(comp_red_rs, 0), "Oxi Rs:", round(comp_oxi_rs, 0), "NH3 Rs:", round(comp_nh3_rs, 0))
+        logger.info("Reading Raw Gas sensors before warmup completed")
+    logger.info("Gas Sensors readings - Red Rs: %s Oxi Rs: %s NH3 Rs: %s", round(comp_red_rs, 0), round(comp_oxi_rs, 0), round(comp_nh3_rs, 0))
     if comp_red_rs/red_r0 > 0:
         red_ratio = comp_red_rs/red_r0
     else:
@@ -374,9 +400,7 @@ def comp_gas(gas_calib_temp, gas_calib_hum, gas_calib_bar, raw_temp, raw_hum, ra
     comp_nh3_rs = round(raw_nh3_rs - (nh3_temp_comp_factor * raw_nh3_rs * gas_temp_diff +
                                       nh3_hum_comp_factor * raw_nh3_rs * gas_hum_diff +
                                       nh3_bar_comp_factor * raw_nh3_rs * gas_bar_diff), 0)
-    print("Gas Compensation. Raw Red Rs:", raw_red_rs, "Comp Red Rs:", comp_red_rs, "Raw Oxi Rs:",
-          raw_oxi_rs, "Comp Oxi Rs:", comp_oxi_rs,
-          "Raw NH3 Rs:", raw_nh3_rs, "Comp NH3 Rs:", comp_nh3_rs)
+    logger.info("Gas Compensation. Raw Red Rs: %s Comp Red Rs: %s Raw Oxi Rs: %s Comp Oxi Rs: %s Raw NH3 Rs: %s Comp NH3 Rs:%s", raw_red_rs, comp_red_rs, raw_oxi_rs, comp_nh3_rs, comp_oxi_rs, raw_nh3_rs)
     return comp_red_rs, comp_oxi_rs, comp_nh3_rs, raw_red_rs, raw_oxi_rs, raw_nh3_rs   
     
 def adjusted_temperature():
@@ -433,7 +457,7 @@ def log_climate_and_gas(run_time, own_data, raw_red_rs, raw_oxi_rs, raw_nh3_rs, 
                                 'Output Bar': own_data["Bar"][1], 'Raw Bar': raw_barometer, 'Oxi': own_data["Oxi"][1],
                                 'Red': own_data["Red"][1], 'NH3': own_data["NH3"][1], 'Raw OxiRS': raw_oxi_rs,
                                 'Raw RedRS': raw_red_rs, 'Raw NH3RS': raw_nh3_rs}
-    print('Logging Environment Data.', environment_log_data)
+    logger.info('Logging Environment Data to environment.log (to support compensation algorithms): %s', environment_log_data)
     with open('environment.log', 'a') as f:
         f.write(',\n' + json.dumps(environment_log_data))
     
@@ -540,6 +564,7 @@ def display_status(enable_adafruit_io, aio_user_name, aio_household_prefix):
     disp.display(img)
     
 def send_data_to_aio(feed_key, data):
+    logger.info("Sending data to aio") 
     aio_json = {"value": data}
     resp_error = False
     reason = ''
@@ -553,28 +578,31 @@ def send_data_to_aio(feed_key, data):
     except requests.exceptions.ConnectionError as e:
         resp_error = True
         reason = 'aio Connection Error'
-        print('aio Connection Error', e)
+        logger.error('aio Connection Error', e)
     except requests.exceptions.Timeout as e:
         resp_error = True
         reason = 'aio Timeout Error'
-        print('aio Timeout Error', e)
+        logger.error('aio Timeout Error', e)
     except requests.exceptions.HTTPError as e:
         resp_error = True
         reason = 'aio HTTP Error'
-        print('aio HTTP Error', e)     
+        logger.error('aio HTTP Error', e)     
     except requests.exceptions.RequestException as e:
         resp_error = True
         reason = 'aio Request Error'
-        print('aio Request Error', e)
+        logger.error('aio Request Error', e)
     else:
         if status_code == 429:
             resp_error = True
             reason = 'Throttling Error'
-            print('aio Throttling Error')
+            logger.Warning('aio Throttling Error')
         elif status_code >= 400:
             resp_error = True
             reason = 'Response Error: ' + str(response.status_code)
-            print('aio ', reason)
+            logger.error('aio ', reason)
+        else: 
+            logger.info("send to aio successful")
+    
     return not resp_error
 
 def send_data_to_influx(mqtt_values):
@@ -585,26 +613,30 @@ def send_data_to_influx(mqtt_values):
     _point2 = Point("enviroplus").tag("location", "Wybalena").field("humidity", mqtt_values["Hum"][0])
     _point3 = Point("enviroplus").tag("location", "Wybalena").field("barometer", mqtt_values["Bar"][0])
     _point4 = Point("enviroplus").tag("location", "Wybalena").field("Lux", mqtt_values["Lux"])
+    _point5 = Point("enviroplus").tag("location", "Wybalena").field("P10", mqtt_values["P10"])
+    _point6 = Point("enviroplus").tag("location", "Wybalena").field("pm2-dot-5", mqtt_values["P2.5"])
 
-    print('Sending to influx')
+    logger.info('Sending data to influx')
+    try:
+        if mqtt_values["Gas Calibrated"]:
+            _point7 = Point("enviroplus").tag("location", "Wybalena").field("Red", mqtt_values["Red"])
+            _point8 = Point("enviroplus").tag("location", "Wybalena").field("Oxi", mqtt_values["Oxi"])
+            _point9 = Point("enviroplus").tag("location", "Wybalena").field("NH3", mqtt_values["NH3"])
+            resp = write_api.write(bucket=influx_bucket, org=influx_org, record=[_point1, _point2, _point3, _point4, _point5, _point6, _point7, _point8, _point9])
 
-    if mqtt_values["Gas Calibrated"]:
-        _point5 = Point("enviroplus").tag("location", "Wybalena").field("Red", mqtt_values["Red"])
-        _point6 = Point("enviroplus").tag("location", "Wybalena").field("Oxi", mqtt_values["Oxi"])
-        _point7 = Point("enviroplus").tag("location", "Wybalena").field("NH3", mqtt_values["NH3"])
-        resp = write_api.write(bucket=influx_bucket, org=influx_org, record=[_point1, _point2, _point3, _point4, _point5, _point6, _point7])
+        else:
+            resp = write_api.write(bucket=influx_bucket, org=influx_org, record=[_point1, _point2, _point3, _point4, _point5, _point6])
 
-    else:
-        resp = write_api.write(bucket=influx_bucket, org=influx_org, record=[_point1, _point2, _point3, _point4])
-
-    print ('Influx sent')
+        logger.info ('Influx data sent')
+    except write_api.exceptions as e:
+        logger.error("Influx send exception",e)
     # with response:', str(resp.status_code))
     return resp
     
        
 
 def send_to_luftdaten(luft_values, id, enable_particle_sensor):
-    print("Sending Data to Luftdaten")
+    logger.info("Sending Data to Luftdaten")
     if enable_particle_sensor:
         pm_values = dict(i for i in luft_values.items() if i[0].startswith("P"))
     temp_values = dict(i for i in luft_values.items() if not i[0].startswith("P"))
@@ -629,13 +661,13 @@ def send_to_luftdaten(luft_values, id, enable_particle_sensor):
             )
         except requests.exceptions.ConnectionError as e:
             resp1_exception = True
-            print('Luftdaten PM Connection Error', e)
+            logger.error('Luftdaten PM Connection Error', e)
         except requests.exceptions.Timeout as e:
             resp1_exception = True
-            print('Luftdaten PM Timeout Error', e)
+            logger.error('Luftdaten PM Timeout Error', e)
         except requests.exceptions.RequestException as e:
             resp1_exception = True
-            print('Luftdaten PM Request Error', e)
+            logger.error('Luftdaten PM Request Error', e)
 
     try:
         resp_2 = requests.post("https://api.luftdaten.info/v1/push-sensor-data/",
@@ -654,13 +686,13 @@ def send_to_luftdaten(luft_values, id, enable_particle_sensor):
         )
     except requests.exceptions.ConnectionError as e:
         resp2_exception = True
-        print('Luftdaten Climate Connection Error', e)
+        logger.error('Luftdaten Climate Connection Error', e)
     except requests.exceptions.Timeout as e:
         resp2_exception = True
-        print('Luftdaten Climate Timeout Error', e)
+        logger.error('Luftdaten Climate Timeout Error', e)
     except requests.exceptions.RequestException as e:
         resp2_exception = True
-        print('Luftdaten Climate Request Error', e)
+        logger.error('Luftdaten Climate Request Error', e)
 
     if resp1_exception == False and resp2_exception == False:
         if resp_1.ok and resp_2.ok:
@@ -806,7 +838,7 @@ def display_results(start_current_display, current_display_is_own, display_modes
         if proximity > 1500 and time.time() - last_page > delay:
             mode += 1
             mode %= len(display_modes)
-            print('Mode', mode)
+            logger.info('Mode', mode)
         selected_display_mode = display_modes[mode]
         if enable_indoor_outdoor_functionality and indoor_outdoor_function == 'Indoor':
             if outdoor_reading_captured:
@@ -909,8 +941,8 @@ class ExternalSensors(object): # Handles the external temp/hum/bar sensors
 
     def print_update(self, message):
         today = datetime.now()
-        print('')
-        print(message + ' on ' + today.strftime('%A %d %B %Y @ %H:%M:%S'))
+        logger.info('')
+        logger.info(message + ' on ' + today.strftime('%A %d %B %Y @ %H:%M:%S'))
         
 def log_barometer(barometer, barometer_history): # Logs 3 hours of barometer readings, taken every 20 minutes
     barometer_log_time = time.time()
@@ -1088,7 +1120,7 @@ def analyse_barometer(barometer_change, barometer):
             icon_forecast = 'Fair'
             domoticz_forecast = '1'
             aio_forecast = 'thermometer-three-quarters'
-    print('3 hour barometer change is '+str(round(barometer_change,1))+' millibars with a current reading of '+
+    logger.info('3 hour barometer change is '+str(round(barometer_change,1))+' millibars with a current reading of '+
           str(round(barometer,1))+' millibars. The weather forecast is '+forecast)
     return forecast, icon_forecast, domoticz_forecast, aio_forecast
 
@@ -1285,11 +1317,11 @@ def update_aio(mqtt_values, forecast, aio_format, aio_forecast_text_format, aio_
     aio_json = {}
     aio_path = '/feeds/'
     if gas_sensors_warm and (aio_package == "Premium" or aio_package == "Premium Plus"):
-        print("Sending", aio_package, "feeds to Adafruit IO with Gas Data")
+        logger.info("Sending", aio_package, "feeds to Adafruit IO with Gas Data")
     elif gas_sensors_warm == False and (aio_package == "Premium" or aio_package == "Premium Plus"):
-        print("Sending", aio_package, "feeds to Adafruit IO without Gas Data")
+        logger.info("Sending", aio_package, "feeds to Adafruit IO without Gas Data")
     else:
-        print("Sending", aio_package, "package feeds to Adafruit IO")
+        logger.info("Sending", aio_package, "package feeds to Adafruit IO")
     # Analyse air quality levels and combine into an overall air quality level based on own_data thesholds
     max_aqi = max_aqi_level_factor(gas_sensors_warm, air_quality_data, air_quality_data_no_gas, own_data)
     combined_air_quality_level_factor = max_aqi[0]
@@ -1297,7 +1329,7 @@ def update_aio(mqtt_values, forecast, aio_format, aio_forecast_text_format, aio_
     combined_air_quality_text = icon_air_quality_levels[combined_air_quality_level] + ": " +\
                                 combined_air_quality_level_factor
     if combined_air_quality_level != previous_aio_air_quality_level: # Only update if it's changed
-        print('Sending Air Quality Level Feed')
+        logger.info('Sending Air Quality Level Feed')
         aio_json['value'] = combined_air_quality_level
         feed_resp = send_data_to_aio(aio_air_quality_level_format, combined_air_quality_level) # Used by all aio packages
         if feed_resp:
@@ -1305,7 +1337,7 @@ def update_aio(mqtt_values, forecast, aio_format, aio_forecast_text_format, aio_
         previous_aio_air_quality_level = combined_air_quality_level
     if (aio_package == 'Premium Plus' or aio_package == 'Premium' or aio_package == 'Basic Air') and\
             combined_air_quality_text != previous_aio_air_quality_text: # Only update if it's changed
-        print('Sending Air Quality Text Feed')
+        logger.info('Sending Air Quality Text Feed')
         feed_resp = send_data_to_aio(aio_air_quality_text_format, combined_air_quality_text)
         if feed_resp:
             aio_resp = True
@@ -1318,14 +1350,14 @@ def update_aio(mqtt_values, forecast, aio_format, aio_forecast_text_format, aio_
         aio_forecast_text = forecast.replace("\n", " ")
         if (aio_package == 'Premium' or aio_package == 'Premium Plus')\
                 and aio_forecast_text != previous_aio_forecast_text:
-            print('Sending Weather Forecast Text Feed')
+            logger.info('Sending Weather Forecast Text Feed')
             feed_resp = send_data_to_aio(aio_forecast_text_format, aio_forecast_text)
             if feed_resp:
                 aio_resp = True
             previous_aio_forecast_text = aio_forecast_text
         if (aio_package == 'Premium' or aio_package == 'Basic Combo' or aio_package == 'Premium Plus') and\
                 aio_forecast != previous_aio_forecast:
-            print('Sending Weather Forecast Icon Feed')
+            logger.info('Sending Weather Forecast Icon Feed')
             feed_resp = send_data_to_aio(aio_forecast_icon_format, aio_forecast)
             if feed_resp:
                 aio_resp = True
@@ -1340,14 +1372,14 @@ def update_aio(mqtt_values, forecast, aio_format, aio_forecast_text_format, aio_
                 outdoor_source_type != "Enviro"):
                 # If indoor_outdoor_functionality is enabled, only send outdoor barometer feed unless
                 # the outdoor source type in not an Enviro Monitor
-                print('Sending', feed, 'Feed')
+                logger.info('Sending', feed, 'Feed')
                 feed_resp = send_data_to_aio(aio_format[feed][0], mqtt_values[feed][0])
                 if feed_resp:
                     aio_resp = True
         else: # Send the value if sending data other than humidity or barometer
             # Only send gas data if the gas sensors are warm and calibrated
             if (feed != "Red" and feed != "Oxi" and feed != "NH3") or mqtt_values['Gas Calibrated']:
-                print('Sending', feed, 'Feed')
+                logger.info('Sending', feed, 'Feed')
                 feed_resp = send_data_to_aio(aio_format[feed][0], mqtt_values[feed])
                 if feed_resp:
                     aio_resp = True
@@ -1370,16 +1402,16 @@ def capture_external_outdoor_data(outdoor_source_type, outdoor_source_id, outdoo
                 #print(outdoor_aio_data)
             except requests.exceptions.ConnectionError as outdoor_aio_comms_error:
                 aio_error = True
-                print('Outdoor aio Connection Error', outdoor_aio_comms_error)
+                logger.error('Outdoor aio Connection Error', outdoor_aio_comms_error)
             except requests.exceptions.Timeout as outdoor_aio_comms_error:
                 aio_error = True
-                print('Outdoor aio Timeout Error', outdoor_aio_comms_error)
+                logger.error('Outdoor aio Timeout Error', outdoor_aio_comms_error)
             except requests.exceptions.RequestException as outdoor_aio_comms_error:
                 aio_error = True
-                print('Outdoor aio Request Error', outdoor_aio_comms_error)
+                logger.error('Outdoor aio Request Error', outdoor_aio_comms_error)
             except ValueError as outdoor_aio_comms_error:
                 aio_error = True
-                print('Outdoor aio Value Error', outdoor_aio_comms_error)
+                logger.error('Outdoor aio Value Error', outdoor_aio_comms_error)
             if not aio_error:
                 if "value" in outdoor_aio_data:
                     external_outdoor_data[aio_feed] = float(outdoor_aio_data["value"])
@@ -1393,16 +1425,16 @@ def capture_external_outdoor_data(outdoor_source_type, outdoor_source_id, outdoo
                 #print(outdoor_luft_data)
             except requests.exceptions.ConnectionError as outdoor_comms_error:
                 luft_error = True
-                print('Outdoor Luftdaten Connection Error', outdoor_comms_error)
+                logger.error('Outdoor Luftdaten Connection Error', outdoor_comms_error)
             except requests.exceptions.Timeout as outdoor_comms_error:
                 luft_error = True
-                print('Outdoor Luftdaten Timeout Error', outdoor_comms_error)
+                logger.error('Outdoor Luftdaten Timeout Error', outdoor_comms_error)
             except requests.exceptions.RequestException as outdoor_comms_error:
                 luft_error = True
-                print('Outdoor Luftdaten Request Error', outdoor_comms_error)
+                logger.error('Outdoor Luftdaten Request Error', outdoor_comms_error)
             except ValueError as outdoor_comms_error:
                 luft_error = True
-                print('Outdoor Luftdaten Value Error', outdoor_comms_error)
+                logger.error('Outdoor Luftdaten Value Error', outdoor_comms_error)
             if not luft_error:
                 if "sensordatavalues" in outdoor_luft_data[0]:
                     for i in range(len(outdoor_luft_data[0]["sensordatavalues"])):
@@ -1627,7 +1659,7 @@ if enable_send_data_to_homemanager or enable_receive_data_from_homemanager or (e
     try:
         client.connect(mqtt_broker_name, 1883, 60)
     except:
-        print('No mqtt Broker Connection')   
+        logger.error('No mqtt Broker Connection')   
     client.loop_start()
   
 if enable_adafruit_io:
@@ -1636,7 +1668,7 @@ if enable_adafruit_io:
     # Four aio_packages: Basic Air (Air Quality Level, Air Quality Text, PM1,  PM2.5, PM10), Basic Combo
     # (Air Quality Level, Weather Forecast Icon, Temp, Hum, Bar Feeds), Premium (All Feeds except eCO2 and TVOC)
     # Premium Plus (All Feeds with eCO2 and TVOC)
-    print('Setting up', aio_package, 'Adafruit IO')
+    logger.info('Setting up Adafruit IO with %s', aio_package)
     aio_url = "https://io.adafruit.com/api/v2/" + aio_user_name
     aio_feed_prefix = aio_household_prefix + '-' + aio_location_prefix
     aio_format = {}
@@ -1682,7 +1714,7 @@ if enable_adafruit_io:
         aio_forecast_icon_format = aio_household_prefix + "-weather-forecast-icon"
         aio_air_quality_level_format = aio_feed_prefix + "-air-quality-level"
     else:
-        print('Invalid Adafruit IO Package')
+        logger.error('Invalid Adafruit IO Package')
 
 # Set up comms error and failure flags
 luft_resp = True # Set to False when there is a Luftdaten comms error
@@ -1712,7 +1744,7 @@ nh3s_r0 = []
 gas_calib_temps = []
 gas_calib_hums = []
 gas_calib_bars = []
-print("Startup R0. Red R0:", round(red_r0, 0), "Oxi R0:", round(oxi_r0, 0), "NH3 R0:", round(nh3_r0, 0))
+logger.info("Startup R0. Red R0: %s Oxi R0: %s NH3 R0: %s", round(red_r0, 0), round(oxi_r0, 0), round(nh3_r0, 0))
 # Capture temp/hum/bar to define variables
 gas_calib_temp = first_temperature_reading
 gas_calib_hum = first_humidity_reading
@@ -1770,7 +1802,7 @@ if enable_eco2_tvoc: # Set up SGP30 if it's enabled
     # Create an SGP30 instance
     sgp30 = SGP30()
     display_startup("Northcliff\nEnviro Monitor\nSensor Warmup\nPlease Wait")
-    print("SGP30 Sensor warming up, please wait...")
+    logger.info("SGP30 Sensor warming up, please wait...")
     sgp30.start_measurement(crude_progress_bar)
     sys.stdout.write('\n')
 
@@ -1779,13 +1811,13 @@ try:
     with open('<Your Mender Software Version File Location Here>', 'r') as f:
         startup_mender_software_version = f.read()
 except IOError:
-    print('No Mender Software Version Available. Using Default')
+    logger.error('No Mender Software Version Available. Using Default')
     startup_mender_software_version = monitor_version
 try:
     with open('<Your Mender Config Version File Location Here>', 'r') as f:
         startup_mender_config_version = f.read()
 except IOError:
-    print('No Mender Config Version Available. Using Default')
+    logger.error('No Mender Config Version Available. Using Default')
     startup_mender_config_version = "Base Config"
 # Check for a persistence data log and use it if it exists and was < 10 minutes ago
 persistent_data_log = {}
@@ -1793,9 +1825,9 @@ try:
     with open('<Your Persistent Data Log File Name Here>', 'r') as f:
         persistent_data_log = json.loads(f.read())
 except IOError:
-    print('No Persistent Data Log Available. Using Defaults')
+    logger.error('No Persistent Data Log Available. Using Defaults')
 except json.decoder.JSONDecodeError:
-    print('Invalid Persistent Data Log File Format. Using Defaults') 
+    logger.error('Invalid Persistent Data Log File Format. Using Defaults') 
 if "Update Time" in persistent_data_log and "Gas Calib Temp List" in persistent_data_log: # Check that the log has
     # been updated and has a format > 3.87
     if (start_time - persistent_data_log["Update Time"]) < 1200: # Only update non eCO2/TVOC variables if the log was
@@ -1830,10 +1862,10 @@ if "Update Time" in persistent_data_log and "Gas Calib Temp List" in persistent_
         mini_temp = persistent_data_log["Mini Temp"]
         last_page = persistent_data_log["Last Page"]
         mode = persistent_data_log["Mode"]
-        print('Persistent Data Log retrieved and used')
-        print("Recovered R0. Red R0:", round(red_r0, 0), "Oxi R0:", round(oxi_r0, 0), "NH3 R0:", round(nh3_r0, 0))
+        logger.info('Persistent Data Log retrieved and used')
+        logger.info("Recovered R0. Red R0:", round(red_r0, 0), "Oxi R0:", round(oxi_r0, 0), "NH3 R0:", round(nh3_r0, 0))
     else:
-        print('Persistent Data Log Too Old. Using Defaults')
+        logger.info('Persistent Data Log Too Old. Using Defaults')
 if "eCO2 TVOC Baseline" in persistent_data_log and enable_eco2_tvoc: # Capture the SGP30 baseline, if it's available
     # and eCO2 and TVOC are enabled
     eco2_tvoc_baseline = persistent_data_log["eCO2 TVOC Baseline"]
@@ -1841,20 +1873,20 @@ if "eCO2 TVOC Baseline" in persistent_data_log and enable_eco2_tvoc: # Capture t
         if time.time() - eco2_tvoc_baseline[2] < 6048000: # Only use the baseline if it has been populated in the
             # persistent data file and was updated less than a week ago
             valid_eco2_tvoc_baseline = True
-            print('Setting eCO2 and TVOC baseline. get_baseline:', eco2_tvoc_baseline[0:2], 'set_baseline:',
+            logger.info('Setting eCO2 and TVOC baseline. get_baseline:', eco2_tvoc_baseline[0:2], 'set_baseline:',
                   eco2_tvoc_baseline[::-1][1:3])
             sgp30.command('set_baseline', eco2_tvoc_baseline[::-1][1:3]) # Reverse the order. get_baseline is in
             # the order of CO2, TVOC. set_baseline is TVOC, CO2 !Arghh!
 if reset_gas_sensor_calibration: # Uses reset_gas_sensor_calibration in config to reset gas sensor calibration.
     #Assume that the gas sensors don't need a warmup time (but need to be stable) in this situation.
-    print("Reset Gas Sensor Calibration")
+    logger.info("Reset Gas Sensor Calibration")
     gas_sensors_warm = False
     gas_sensors_warmup_time = startup_stabilisation_time
 
 if enable_adafruit_io: # Send Version info to Adafruit IO
     if aio_package == "Premium Plus" or aio_package == "Premium":
         version_text = "Code: " + startup_mender_software_version + " Config: " + startup_mender_config_version
-        print("Sending Startup Versions to Adafruit IO", version_text)
+        logger.info("Sending Startup Versions to Adafruit IO", version_text)
         feed_resp = send_data_to_aio(aio_version_text_format, version_text)
 
 # Update the weather forecast, based on the data retrieved from the persistent data log
@@ -1881,9 +1913,8 @@ try:
                 gas_calib_hum = raw_hum
                 gas_calib_bar = raw_barometer
                 red_r0, oxi_r0, nh3_r0 = read_raw_gas()
-                print("Gas Sensor Calibration after Warmup. Red R0:", red_r0, "Oxi R0:", oxi_r0, "NH3 R0:", nh3_r0)
-                print("Gas Calibration Baseline. Temp:", round(gas_calib_temp, 1), "Hum:", round(gas_calib_hum, 0),
-                      "Barometer:", round(gas_calib_bar, 1))
+                logger.info("Gas Sensor Calibration after Warmup. Red R0: %s Oxi R0: %s NH3 R0: %s", red_r0, oxi_r0, nh3_r0)
+                logger.info("Gas Calibration Baseline. Temp: %s Hum: %s Barometer: %s", round(gas_calib_temp, 1), round(gas_calib_hum, 0), round(gas_calib_bar, 1))
                 reds_r0 = [red_r0] * 7
                 oxis_r0 = [oxi_r0] * 7
                 nh3s_r0 = [nh3_r0] * 7
@@ -1898,25 +1929,25 @@ try:
                                                                     gas_calib_temp, gas_calib_hum, gas_calib_bar,
                                                                     altitude, enable_eco2_tvoc)
             first_climate_reading_done = True
-            print('Luftdaten Values', luft_values)
-            print('mqtt Values', mqtt_values)
+            logger.info('Luftdaten Values %s', luft_values)
+            logger.info('mqtt Values %s', mqtt_values)
             # Write to the watchdog file unless there is a comms failure for >= comms_failure_tolerance
             # when both Luftdaten and Adafruit IO arenabled
             if comms_failure == False:
-                with open('<Your Watchdog File Name Here>', 'w') as f:
+                with open('watchdog_status.txt', 'w') as f:
                     f.write('Enviro Script Alive')
             if enable_luftdaten: # Send data to Luftdaten if enabled
                 luft_resp = send_to_luftdaten(luft_values, id, enable_particle_sensor)
                 #logging.info("Luftdaten Response: {}\n".format("ok" if luft_resp else "failed"))
                 data_sent_to_luftdaten_or_aio = True
                 if luft_resp:
-                    print("Luftdaten update successful. Waiting for next capture cycle")
+                    logger.info("Luftdaten update successful. Waiting for next capture cycle")
                 else:
-                    print("Luftdaten update unsuccessful. Waiting for next capture cycle")
+                    logger.info("Luftdaten update unsuccessful. Waiting for next capture cycle")
             if enable_influxdata: #send to influxdb if enabled
                 influx_response = send_data_to_influx(mqtt_values)
             else:
-                print('Waiting for next capture cycle')
+                logger.info('Waiting for next capture cycle')
 
         # Read TVOC and eCO2 every second
         if enable_eco2_tvoc:
@@ -1937,7 +1968,7 @@ try:
             mqtt_values["Forecast"] = {"Valid": valid_barometer_history, "3 Hour Change": round(barometer_change, 1),
                                        "Forecast": forecast.replace("\n", " ")}
             mqtt_values["Bar"][1] = domoticz_forecast # Add Domoticz Weather Forecast
-            print('Barometer Logged. Waiting for next capture cycle')
+            logger.info('Barometer Logged. Waiting for next capture cycle')
 
         if (enable_indoor_outdoor_functionality and indoor_outdoor_function == 'Indoor'
                 and outdoor_source_type == 'Enviro'): # Process paired outdoor unit, if enabled
@@ -1989,9 +2020,9 @@ try:
                     data_sent_to_luftdaten_or_aio = True
                     previous_aio_update_minute = window_minute
                     if aio_resp:
-                        print("At least one Adafruit IO feed successful. Waiting for next capture cycle")
+                        logger.info("At least one Adafruit IO feed successful. Waiting for next capture cycle")
                     else:
-                        print("No Adafruit IO feeds successful. Waiting for next capture cycle")
+                        logger.info("No Adafruit IO feeds successful. Waiting for next capture cycle")
             time_since_long_update = time.time() - long_update_time
             
             # Provide/capture other external updates and update persistent data log every 5 minutes
@@ -2016,7 +2047,7 @@ try:
                         external_outdoor_data = capture_external_outdoor_data(outdoor_source_type, outdoor_source_id,
                                                                               outdoor_aio_readings)
                         if external_outdoor_data != {}:
-                            print('External Outdoor Data', external_outdoor_data)
+                            logger.info('External Outdoor Data', external_outdoor_data)
                             if outdoor_source_type == 'Luftdaten':
                                 if "Temp" in external_outdoor_data:
                                     outdoor_data["Temp"][1] = external_outdoor_data["Temp"]
@@ -2071,7 +2102,7 @@ try:
                                 outdoor_data["Bar"][1] = own_data["Bar"][1] # Use internal air pressure data
                                 outdoor_gas_sensors_warm = True
                         else:
-                            print("No external outdoor data captured")
+                            logger.info("No external outdoor data captured")
 
                             
                 # Write to the persistent data log
@@ -2083,7 +2114,7 @@ try:
                             eco2_tvoc_get_baseline_update_time = time.time()
                             eco2_tvoc_baseline = sgp30.command('get_baseline')
                             eco2_tvoc_baseline.append(eco2_tvoc_get_baseline_update_time)
-                            print('Storing eCO2/TVOC Baseline', eco2_tvoc_baseline)
+                            logger.info('Storing eCO2/TVOC Baseline', eco2_tvoc_baseline)
                     persistent_data_log = {"Update Time": long_update_time, "Barometer Log Time": barometer_log_time,
                                            "Forecast": forecast, "Barometer Available Time": barometer_available_time,
                                            "Valid Barometer History": valid_barometer_history,
@@ -2116,7 +2147,7 @@ try:
                                            "Outdoor Disp Values": outdoor_disp_values,
                                            "Maxi Temp": maxi_temp, "Mini Temp": mini_temp, "Last Page": last_page,
                                            "Mode": mode}
-                print('Logging Barometer, Forecast, Gas Calibration and Display Data')
+                logger.info('Logging Barometer, Forecast, Gas Calibration and Display Data')
                 with open('data.log', 'w') as f:
                     f.write(json.dumps(persistent_data_log))
                 if "Forecast" in mqtt_values:
@@ -2127,26 +2158,26 @@ try:
                     with open('<Your Mender Software Version File Location Here>', 'r') as f:
                         latest_mender_software_version = f.read()
                 except IOError:
-                    print('No Mender Software Version Available')
+                    logger.error('No Mender Software Version Available')
                     latest_mender_software_version = startup_mender_software_version
-                print("Startup Mender Software Version:", startup_mender_software_version,
+                logger.info("Startup Mender Software Version:", startup_mender_software_version,
                       "Latest Mender Software Version:", latest_mender_software_version)
                 try:
                     with open('<Your Mender Config Version File Location Here>', 'r') as f:
                         latest_mender_config_version = f.read()
                 except IOError:
-                    print('No Mender Config Version Available')
+                    logger.error('No Mender Config Version Available')
                     latest_mender_config_version = startup_mender_config_version
-                print("Startup Mender Config Version:", startup_mender_config_version,
+                logger.info("Startup Mender Config Version:", startup_mender_config_version,
                       "Latest Mender Config Version:", latest_mender_config_version)
                 if latest_mender_software_version != startup_mender_software_version or\
                         latest_mender_config_version != startup_mender_config_version:
-                    print('Software or Config Update Received. Restarting aqimonitor')
+                    logger.info('Software or Config Update Received. Restarting aqimonitor')
                     if enable_send_data_to_homemanager or enable_receive_data_from_homemanager:
                         client.loop_stop()
                     time.sleep(10)
                     os.system('sudo systemctl restart aqimonitor')
-                print('Waiting for next capture cycle')
+                logger.info('Waiting for next capture cycle')
 
         # Luftdaten and/or Adafruit IO Communications Check. Note that aio_resp and luft_resp are both TRUE on startup,
         # so there has to be a comms error for either of them to be set to FALSE
@@ -2168,7 +2199,7 @@ try:
             successful_comms_time = time.time()
         if time.time() - successful_comms_time >= comms_failure_tolerance:
             comms_failure = True
-            print("Communications has been lost for more than " + str(int(comms_failure_tolerance/60)) +
+            logger.error("Communications has been lost for more than " + str(int(comms_failure_tolerance/60)) +
                   " minutes. System will reboot via watchdog")
         # Outdoor Sensor Comms Check
         if time.time() - outdoor_reading_captured_time > long_update_delay * 4:
@@ -2182,8 +2213,8 @@ try:
         today=datetime.now()
         if int(today.strftime('%H')) == gas_daily_r0_calibration_hour and gas_daily_r0_calibration_completed == False\
                 and gas_sensors_warm and first_climate_reading_done:
-            print("Daily Gas Sensor Calibration. Old R0s. Red R0:", red_r0, "Oxi R0:", oxi_r0, "NH3 R0:", nh3_r0)
-            print("Old Calibration Baseline. Temp:", round(gas_calib_temp, 1), "Hum:", round(gas_calib_hum, 0),
+            logger.info("Daily Gas Sensor Calibration. Old R0s. Red R0:", red_r0, "Oxi R0:", oxi_r0, "NH3 R0:", nh3_r0)
+            logger.info("Old Calibration Baseline. Temp:", round(gas_calib_temp, 1), "Hum:", round(gas_calib_hum, 0),
                   "Barometer:", round(gas_calib_bar, 1))
             # Set new calibration baseline using 7 day rolling average
             gas_calib_temps = gas_calib_temps[1:] + [raw_temp]
@@ -2209,8 +2240,8 @@ try:
             nh3s_r0 = nh3s_r0[1:] + [spot_nh3_r0]
             #print("NH3s R0", nh3s_r0)
             nh3_r0 = round(sum(nh3s_r0)/float(len(nh3s_r0)), 0)
-            print('New R0s. Red R0:', red_r0, 'Oxi R0:', oxi_r0, 'NH3 R0:', nh3_r0)
-            print("New Calibration Baseline. Temp:", round(gas_calib_temp, 1), "Hum:", round(gas_calib_hum, 0),
+            logger.info('New R0s. Red R0:', red_r0, 'Oxi R0:', oxi_r0, 'NH3 R0:', nh3_r0)
+            logger.info("New Calibration Baseline. Temp:", round(gas_calib_temp, 1), "Hum:", round(gas_calib_hum, 0),
                   "Barometer:", round(gas_calib_bar, 1))
             gas_daily_r0_calibration_completed = True
         if int(today.strftime('%H')) == (gas_daily_r0_calibration_hour + 1) and gas_daily_r0_calibration_completed:
@@ -2226,7 +2257,7 @@ try:
 except KeyboardInterrupt:
     if enable_send_data_to_homemanager or enable_receive_data_from_homemanager:
         client.loop_stop()
-    print('Keyboard Interrupt')
+    logger.error('Keyboard Interrupt')
 
 # Acknowledgements
 # Based on code from:
@@ -2238,3 +2269,4 @@ except KeyboardInterrupt:
 # https://github.com/pimoroni/sgp30-python
 # https://github.com/home-assistant-ecosystem/python-luftdaten
 # Weather Forecast based on www.worldstormcentral.co/law_of_storms/secret_law_of_storms.html by R. J. Ellis
+
