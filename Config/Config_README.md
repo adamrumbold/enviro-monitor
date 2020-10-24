@@ -65,6 +65,14 @@ The config.json file is used to set the Enviro Monitor’s configuration. It has
 
 "mqtt_client_name": Sets the mqtt client name for use by the mqtt broker when using mqtt messaging. Set to “” if no mqtt messaging is required
 
+"enable_influxdata": set to true to send data to influxDB cloud
+
+"influx_token": Set to the token for your influx account
+
+"influx_org": Set your influxDB organisation
+
+"influx_bucket": Set your influx bucket
+
 "outdoor_mqtt_topic": Sets the mqtt topic for the outdoor monitor within the household. Suggest using “Outdoor EM” if mqtt messaging is required and “” if no mqtt messaging is required
 
 "indoor_mqtt_topic": Sets the mqtt topic for the indoor monitor within the household. Suggest using “Indoor EM” if mqtt messaging is required and “” if no mqtt messaging is required
